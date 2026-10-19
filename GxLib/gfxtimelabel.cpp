@@ -48,7 +48,8 @@ void GfxTimeLabel::refreshSize()
 
 int GfxTimeLabel::rotatedTextWidth() const
 {
-    return QFontMetrics(m_font, this).height();
+    // Qt 5.12's device-aware overload predates its const QPaintDevice argument.
+    return QFontMetrics(m_font, const_cast<GfxTimeLabel*>(this)).height();
 }
 
 void GfxTimeLabel::setCaptureScale(qreal scale)

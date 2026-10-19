@@ -16,7 +16,7 @@ jobs:
       - name: Install Linux Qt build environment
         run: |
           apt-get update
-          apt-get install -y build-essential qtbase5-dev libqt5svg5-dev qttools5-dev-tools curl ca-certificates file patchelf fontconfig libxkbcommon-x11-0 libxcb-cursor0 libfuse2
+          apt-get install -y build-essential qtbase5-dev libqt5svg5-dev qttools5-dev-tools curl ca-certificates file patchelf fontconfig xvfb libxkbcommon-x11-0 libxcb-cursor0 libfuse2
       - uses: actions/checkout@v4
       - name: Install deployment tools
         run: |

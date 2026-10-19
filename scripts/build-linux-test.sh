@@ -49,6 +49,11 @@ QT_QPA_PLATFORM=offscreen timeout 5 "$APP/seisee-test" > "$OUT/qa/portable-start
 status=$?
 set -e
 test "$status" -eq 124
+set +e
+QT_QPA_PLATFORM=xcb xvfb-run -a timeout 5 "$APP/seisee-test" > "$OUT/qa/xcb-startup.log" 2>&1
+status=$?
+set -e
+test "$status" -eq 124
 ARCH=x86_64 appimagetool "$APP" "$OUT/seisee-test"
 chmod 755 "$OUT/seisee-test"
 set +e
