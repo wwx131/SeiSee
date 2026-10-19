@@ -9,6 +9,7 @@ QT       += core gui svg
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
 TARGET = SeiSeeMp
+unix:!macx: TARGET = seisee-test
 TEMPLATE = app
 CONFIG += warn_off
 CONFIG += c++11

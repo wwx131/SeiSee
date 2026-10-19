@@ -184,7 +184,11 @@ int main(int argc, char *argv[])
     QString fileToOpen;
     for (int i = 1; i < args.size(); ++i) {
         const QString &arg = args.at(i);
-        if (!arg.startsWith('-') && !arg.startsWith('/')) {
+        if (!arg.startsWith('-')
+#ifdef Q_OS_WIN
+            && !arg.startsWith('/')
+#endif
+        ) {
             fileToOpen = arg;
             break;
         }

@@ -12,6 +12,10 @@ class QProgressBar;
 class QGroupBox;
 class CustomCheckBox;
 class FkPlot;
+class FkTxPlot;
+class QTimer;
+class QTabWidget;
+class QScrollArea;
 
 class FkSpectrumDialog : public QDialog {
     Q_OBJECT
@@ -22,6 +26,7 @@ public:
     void reject() override;
     bool isCalculating() const { return worker!=nullptr; }
     bool savePng(const QString& filename);
+    bool hasFilterPreview() const { return !lastFilter.filtered.isEmpty() && !filterStale; }
     void setInitialRange(int firstTrace, int lastTrace, double startMs, double endMs);
 private:
     QString path, directory;
@@ -30,6 +35,10 @@ private:
     FkWorker* worker=nullptr;
     bool haveDisplayRange=false;
     bool frequencyEdited=false, wavenumberEdited=false, colorsEdited=false;
+    bool filterStale=true,closing=false;
+    int filterRevision=0;
+    FkSpectrum originalSpectrum;
+    FkFilterResult lastFilter;
     QGroupBox* inputGroup;
     QSpinBox *first, *last, *imageWidth, *imageHeight;
     QDoubleSpinBox *start, *end, *spacing, *fmin, *fmax, *kmin, *kmax, *cmin, *cmax;
@@ -39,7 +48,26 @@ private:
     QLabel* status;
     QProgressBar* progress;
     FkPlot* plot;
-    void begin();
+    FkTxPlot* txPlot;
+    QTabWidget* previewTabs;
+    QComboBox *filterType,*filterResponse,*filterDirection,*previewMode;
+    QDoubleSpinBox *velocityLow,*velocityHigh,*velocityTaper,*filterFmin,*filterFmax,*attenuation,*taperBins,*timeBlend;
+    QSpinBox* traceBlend;
+    CustomCheckBox *realTime,*velocityAxis,*filterOverlay,*zeroLine;
+    QPushButton *filterButton,*exportFiltered;
+    QLabel* polygonStatus;
+    QTimer* refreshTimer;
+    QScrollArea* previewViewport;
+    QPushButton* fitImage;
+    void resizePreview();
+    bool eventFilter(QObject* object,QEvent* event) override;
+    void begin(int mode=0);
+    void launch(FkWorker* job);
+    FkFilterSettings filterSettings() const;
+    void filterChanged();
+    void receiveFilter(const FkFilterResult& result);
+    void showPreview();
+    void saveFiltered();
     void receive(const FkSpectrum& result);
     bool applyDisplay(bool autoColors);
     void saveImage();

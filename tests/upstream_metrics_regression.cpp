@@ -107,6 +107,130 @@ private slots:
         zero[0]=std::numeric_limits<float>::quiet_NaN();
         QVERIFY_EXCEPTION_THROWN(calculateFk(zero,7,37,.002,12.5,false),std::runtime_error);
     }
+    void fkFilterNumericsAndExport() {
+        const double pi=std::acos(-1.0);
+        for(auto dims:{QSize(24,120),QSize(17,37)}) {
+            int nx=dims.width(),nt=dims.height(),f=nt==120?8:3,slowK=nt==120?4:5;
+            QVector<float> raw(nx*nt),fast(nx*nt),slow(nx*nt);
+            for(int x=0;x<nx;++x)for(int t=0;t<nt;++t){int i=x*nt+t;
+                fast[i]=float(std::cos(2*pi*(double(f)*t/nt+double(x)/nx)));
+                slow[i]=float(std::cos(2*pi*(double(f)*t/nt+double(slowK)*x/nx)));raw[i]=fast[i]+slow[i];}
+            FkFilterSettings s;s.frequencyHigh=125;s.velocityHigh=1500;s.velocityTaper=0;s.taperBins=0;s.timeBlendMs=0;s.traceBlend=0;s.attenuationDb=-80;
+            auto result=filterFk(raw,nx,nt,.004,10,s,false);
+            double error=0;for(int i=0;i<raw.size();++i)error=qMax(error,std::abs(result.filtered[i]-(fast[i]+.0001*slow[i])));
+            QVERIFY2(error<1e-4,qPrintable(QString("Fan filter amplitude/velocity error %1").arg(error)));
+            QVector<float> directional(raw.size()),negative(raw.size());
+            for(int x=0;x<nx;++x)for(int t=0;t<nt;++t){int i=x*nt+t;negative[i]=float(std::cos(2*pi*(double(f)*t/nt-double(slowK)*x/nx)));directional[i]=slow[i]+negative[i];}
+            s.direction=1;result=filterFk(directional,nx,nt,.004,10,s,false);
+            for(int i=0;i<raw.size();++i)QVERIFY(std::abs(result.filtered[i]-(negative[i]+.0001*slow[i]))<1e-4);
+            s.direction=2;result=filterFk(directional,nx,nt,.004,10,s,false);
+            for(int i=0;i<raw.size();++i)QVERIFY(std::abs(result.filtered[i]-(slow[i]+.0001*negative[i]))<1e-4);
+            s.direction=0;
+            s.attenuationDb=0;result=filterFk(raw,nx,nt,.004,10,s,true);
+            for(int i=0;i<raw.size();++i)QVERIFY(std::abs(result.filtered[i]-raw[i])<1e-4);
+            s.attenuationDb=-80;s.polygon=true;double k=double(slowK)/(nx*10),hz=double(f)/(nt*.004);
+            s.vertices=QPolygonF({QPointF(k-.001,hz-1),QPointF(k+.001,hz-1),QPointF(k+.001,hz+1),QPointF(k-.001,hz+1)});
+            result=filterFk(raw,nx,nt,.004,10,s,false);
+            for(int i=0;i<raw.size();++i)QVERIFY(std::abs(result.filtered[i]-(fast[i]+.0001*slow[i]))<1e-4);
+            s.polygon=false;s.reject=false;result=filterFk(raw,nx,nt,.004,10,s,false);
+            for(int i=0;i<raw.size();++i)QVERIFY(std::abs(result.filtered[i]-(slow[i]+.0001*fast[i]))<1e-4);
+            s.reject=true;s.timeBlendMs=20;s.traceBlend=2;result=filterFk(raw,nx,nt,.004,10,s,false);
+            for(int x=0;x<nx;++x)for(int t=0;t<nt;++t){int i=x*nt+t;
+                if(x==0||x==nx-1||t==0||t==nt-1)QCOMPARE(result.filtered[i],raw[i]);
+                QVERIFY(std::abs(raw[i]-result.filtered[i]-result.removed[i])<1e-6);}
+            QVERIFY_EXCEPTION_THROWN(filterFk(raw,nx,nt,.004,10,s,false,[](){return true;}),std::runtime_error);
+        }
+        SgyFile source;source.setFname(fixture);source.setActive(true);QVERIFY(source.Active());
+        const int nx=8,nt=160,tr0=3,t0=20;QVector<float> raw(nx*nt);
+        for(int x=0;x<nx;++x){auto trace=source.Rs(tr0+x);QVERIFY(trace);std::copy(trace+t0,trace+t0+nt,raw.begin()+x*nt);}
+        FkFilterSettings s;s.frequencyHigh=.5/source.Si();s.attenuationDb=-30;s.velocityHigh=2000;
+        auto result=filterFk(raw,nx,nt,source.Si(),12.5,s,false);
+        result.first=tr0;result.sampleFirst=t0;result.source=fixture;result.sourceSize=QFileInfo(fixture).size();result.sourceModified=QFileInfo(fixture).lastModified().toMSecsSinceEpoch();
+        QString output=out+"/data/fk-filtered.sgy";saveFkSegy(output,result);
+        SgyFile filtered;filtered.setFname(output);filtered.setActive(true);QVERIFY(filtered.Active());
+        QCOMPARE(filtered.Nt(),source.Nt());QCOMPARE(filtered.Ns(),source.Ns());QCOMPARE(filtered.Si(),source.Si());QCOMPARE(filtered.Format(),5);
+        QFile originalFile(fixture),outputFile(output);QVERIFY(originalFile.open(QIODevice::ReadOnly));QVERIFY(outputFile.open(QIODevice::ReadOnly));
+        QCOMPARE(originalFile.read(3600),outputFile.read(3600));
+        for(int x=0;x<source.Nt();++x){auto a=source.Rs(x),b=filtered.Rs(x);QVERIFY(a&&b);
+            originalFile.seek(3600+qint64(x)*source.TrLength());outputFile.seek(3600+qint64(x)*filtered.TrLength());QCOMPARE(originalFile.read(240),outputFile.read(240));
+            for(int t=0;t<source.Ns();++t){if(x>=tr0&&x<tr0+nx&&t>=t0&&t<t0+nt)QCOMPARE(b[t],result.filtered[(x-tr0)*nt+t-t0]);else QCOMPARE(b[t],a[t]);}}
+        QVERIFY_EXCEPTION_THROWN(saveFkSegy(fixture,result),std::runtime_error);
+        QString cancelled=out+"/cancelled.sgy";QFile::remove(cancelled);
+        QVERIFY_EXCEPTION_THROWN(saveFkSegy(cancelled,result,[](){return true;}),std::runtime_error);QVERIFY(!QFile::exists(cancelled));
+        QFile marker(cancelled);QVERIFY(marker.open(QIODevice::WriteOnly));marker.write("keep");marker.close();
+        QVERIFY_EXCEPTION_THROWN(saveFkSegy(cancelled,result,[](){return true;}),std::runtime_error);
+        QVERIFY(marker.open(QIODevice::ReadOnly));QCOMPARE(marker.readAll(),QByteArray("keep"));marker.close();
+    }
+
+    void fkFilterInterface() {
+        QString realFile=qEnvironmentVariable("SEISEE_FK_DEMO_FILE");int demoTraces=32;double demoTime=700;
+        if(!realFile.isEmpty()){
+            SgyFile data;data.setFname(realFile);data.setActive(true);QVERIFY(data.Active());
+            demoTraces=qMin(data.Nt(),400);demoTime=(data.Ns()-1)*data.Si()*1000;
+            window->openFixture(realFile);QTest::qWait(200);
+        }
+        control<QAction>(window,"actionFkSpectrum")->trigger();auto fk=dialog<FkSpectrumDialog>();QVERIFY(fk);
+        QCOMPARE(fk->font().family(),QApplication::font().family());
+        QCOMPARE(fk->font().pointSizeF(),QApplication::font().pointSizeF());
+        auto panel=control<QWidget>(fk,"fkParameterPanel");auto viewport=control<QScrollArea>(fk,"fkViewport");
+        QVERIFY(panel->mapTo(fk,QPoint(0,0)).x()<viewport->mapTo(fk,QPoint(0,0)).x());
+        for(const char* name:{"fkFirst","fkFmin","fkImageWidth","fkFilterType"})QVERIFY(panel->isAncestorOf(control<QWidget>(fk,name)));
+        control<QSpinBox>(fk,"fkFirst")->setValue(1);control<QSpinBox>(fk,"fkLast")->setValue(demoTraces);control<QDoubleSpinBox>(fk,"fkEnd")->setValue(demoTime);
+        control<QPushButton>(fk,"fkCalculate")->click();QTRY_VERIFY_WITH_TIMEOUT(!fk->isCalculating(),15000);
+        auto overlay=control<QCheckBox>(fk,"fkShowFilterOverlay");auto zero=control<QCheckBox>(fk,"fkShowZeroLine");
+        QVERIFY(!overlay->isChecked());QVERIFY(!zero->isChecked());
+        auto cleanPlot=control<QWidget>(fk,"fkPlot")->grab().toImage();
+        overlay->setChecked(true);zero->setChecked(true);
+        QVERIFY(control<QWidget>(fk,"fkPlot")->grab().toImage()!=cleanPlot);
+        overlay->setChecked(false);zero->setChecked(false);
+        QCOMPARE(control<QWidget>(fk,"fkPlot")->grab().toImage(),cleanPlot);
+        double span=control<QDoubleSpinBox>(fk,"fkFmax")->value()-control<QDoubleSpinBox>(fk,"fkFmin")->value();
+        control<QPushButton>(fk,"fkZoomIn")->click();QVERIFY(control<QDoubleSpinBox>(fk,"fkFmax")->value()-control<QDoubleSpinBox>(fk,"fkFmin")->value()<span);
+        control<QPushButton>(fk,"fkResetView")->click();
+        control<QDoubleSpinBox>(fk,"fkFmax")->setValue(80);control<QPushButton>(fk,"fkApply")->click();
+        if(realFile.isEmpty()){
+            control<QPushButton>(fk,"fkDrawFan")->click();QVERIFY(overlay->isChecked());auto canvas=control<QWidget>(fk,"fkPlot");double w=canvas->width()-230,h=canvas->height()-165;
+            QTest::mouseClick(canvas,Qt::LeftButton,Qt::NoModifier,QPoint(78+w*.2,92+h*.25));
+            QTest::mouseClick(canvas,Qt::LeftButton,Qt::NoModifier,QPoint(78+w*.4,92+h*.6));
+            QVERIFY(control<QDoubleSpinBox>(fk,"fkVelocityHigh")->value()>control<QDoubleSpinBox>(fk,"fkVelocityLow")->value());
+            control<QDoubleSpinBox>(fk,"fkVelocityLow")->setValue(0);control<QDoubleSpinBox>(fk,"fkVelocityHigh")->setValue(1500);
+        }
+        if(!realFile.isEmpty()){
+            control<QComboBox>(fk,"fkPalette")->setCurrentIndex(1);control<QDoubleSpinBox>(fk,"fkFmax")->setValue(60);
+            control<QPushButton>(fk,"fkAutoColor")->click();
+        }
+        control<QPushButton>(fk,"fkApplyFilter")->click();QTRY_VERIFY_WITH_TIMEOUT(!fk->isCalculating(),20000);QVERIFY(fk->hasFilterPreview());
+        QVERIFY(control<QPushButton>(fk,"fkSaveFiltered")->isEnabled());
+        control<QSpinBox>(fk,"fkImageWidth")->setValue(900);control<QSpinBox>(fk,"fkImageHeight")->setValue(650);
+        control<QPushButton>(fk,"fkFitImage")->setChecked(true);QTest::qWait(50);
+        auto section=control<QComboBox>(fk,"fkSection");section->setCurrentIndex(1);QMetaObject::invokeMethod(section,"activated",Qt::DirectConnection,Q_ARG(int,1));
+        QVERIFY(fk->savePng(out+"/fk_filter_preview.png"));QCOMPARE(QImage(out+"/fk_filter_preview.png").size(),QSize(900,650));
+        fk->grab().save(out+"/fk_filter_interface.png");
+        control<QTabWidget>(fk,"fkPreviewTabs")->setCurrentIndex(1);fk->grab().save(out+"/fk_tx_interface.png");
+        QVERIFY(fk->savePng(out+"/fk_tx_export.png"));QCOMPARE(QImage(out+"/fk_tx_export.png").size(),QSize(900,650));
+        if(!realFile.isEmpty()){
+            control<QTabWidget>(fk,"fkPreviewTabs")->setCurrentIndex(0);control<QComboBox>(fk,"fkPreviewMode")->setCurrentIndex(0);
+            QVERIFY(fk->savePng(out+"/fk_original.png"));fk->close();QTRY_VERIFY(dialog<FkSpectrumDialog>()==nullptr);return;
+        }
+        control<QTabWidget>(fk,"fkPreviewTabs")->setCurrentIndex(0);control<QComboBox>(fk,"fkPreviewMode")->setCurrentIndex(0);
+        control<QPushButton>(fk,"fkDrawPolygon")->click();
+        auto plot=control<QWidget>(fk,"fkPlot");double w=plot->width()-230,h=plot->height()-165;
+        QTest::mouseClick(plot,Qt::LeftButton,Qt::NoModifier,QPoint(78+w*.25,92+h*.3));
+        QTest::mouseClick(plot,Qt::LeftButton,Qt::NoModifier,QPoint(78+w*.7,92+h*.4));
+        QTest::mouseClick(plot,Qt::LeftButton,Qt::NoModifier,QPoint(78+w*.5,92+h*.8));
+        control<QPushButton>(fk,"fkFinishPolygon")->click();
+        control<QPushButton>(fk,"fkApplyFilter")->click();QTRY_VERIFY_WITH_TIMEOUT(!fk->isCalculating(),20000);QVERIFY(fk->hasFilterPreview());
+        control<QCheckBox>(fk,"fkRealTime")->setChecked(true);control<QDoubleSpinBox>(fk,"fkAttenuation")->setValue(-20);
+        QTRY_VERIFY_WITH_TIMEOUT(fk->hasFilterPreview()&&!fk->isCalculating(),20000);
+        QTest::qWait(500);QVERIFY(!fk->isCalculating());control<QCheckBox>(fk,"fkRealTime")->setChecked(false);
+        control<QComboBox>(fk,"fkPreviewMode")->setCurrentIndex(3);QVERIFY(fk->savePng(out+"/fk_gain_preview.png"));
+        fk->close();QTRY_VERIFY(dialog<FkSpectrumDialog>()==nullptr);
+        control<QAction>(window,"actionFkSpectrum")->trigger();fk=dialog<FkSpectrumDialog>();QVERIFY(fk);
+        control<QPushButton>(fk,"fkApplyFilter")->click();QVERIFY(fk->isCalculating());
+        window->close();QVERIFY(!fk->isCalculating());QVERIFY(!fk->isVisible());
+        QTRY_VERIFY(dialog<FkSpectrumDialog>()==nullptr);window->show();
+    }
+
     void fkDefaultsToVisibleRange() {
         control<QRadioButton>(window,"rbDirNorm")->setChecked(true);
         QMetaObject::invokeMethod(window,"on_zoomAllBtn_pressed",Qt::DirectConnection);QTest::qWait(50);

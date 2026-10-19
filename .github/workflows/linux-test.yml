@@ -1,0 +1,35 @@
+name: Build seisee-test Linux portable
+on:
+  push:
+    branches: [codex/linux-test-build-20261019]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    container: ubuntu:20.04
+    timeout-minutes: 30
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      APPIMAGE_EXTRACT_AND_RUN: '1'
+    steps:
+      - name: Install Linux Qt build environment
+        run: |
+          apt-get update
+          apt-get install -y build-essential qtbase5-dev libqt5svg5-dev qttools5-dev-tools curl ca-certificates file patchelf fontconfig libxkbcommon-x11-0 libxcb-cursor0 libfuse2
+      - uses: actions/checkout@v4
+      - name: Install deployment tools
+        run: |
+          curl -fL --retry 3 https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -o /usr/local/bin/linuxdeploy
+          curl -fL --retry 3 https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage -o /usr/local/bin/linuxdeploy-plugin-qt
+          curl -fL --retry 3 https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -o /usr/local/bin/appimagetool
+          chmod 755 /usr/local/bin/linuxdeploy /usr/local/bin/linuxdeploy-plugin-qt /usr/local/bin/appimagetool
+      - name: Build test and package
+        run: bash scripts/build-linux-test.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: seisee-test-linux-x86_64
+          path: dist/linux-test/
+          if-no-files-found: warn
+          retention-days: 7

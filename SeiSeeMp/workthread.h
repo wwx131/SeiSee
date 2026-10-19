@@ -6,6 +6,7 @@
 #include <functional>
 #include <QThread>
 #include <QVector>
+#include <QPolygonF>
 
 #ifdef _MSC_VER
 #pragma warning(push)
@@ -41,6 +42,30 @@ FkSpectrum calculateFk(const QVector<float>& traces, int nx, int nt,
                        double dt, double dx, bool preprocess,
                        const std::function<bool()>& cancelled = {});
 
+struct FkFilterSettings {
+    bool polygon=false, reject=true;
+    int direction=0; // 0: both, 1: positive k, 2: negative k
+    double velocityLow=0, velocityHigh=1500, velocityTaper=200;
+    double frequencyLow=0, frequencyHigh=250, attenuationDb=-60, taperBins=2;
+    double timeBlendMs=20;
+    int traceBlend=2;
+    QPolygonF vertices;
+};
+struct FkFilterResult {
+    QVector<float> raw, filtered, removed;
+    FkSpectrum originalSpectrum, filteredSpectrum, removedSpectrum, gain;
+    int nx=0, nt=0, first=0, sampleFirst=0;
+    double dt=0, dx=0;
+    QString source;
+    qint64 sourceSize=0, sourceModified=0;
+};
+Q_DECLARE_METATYPE(FkFilterResult)
+FkFilterResult filterFk(const QVector<float>& raw,int nx,int nt,double dt,double dx,
+                        const FkFilterSettings& settings,bool displayPreprocess,
+                        const std::function<bool()>& cancelled = {});
+void saveFkSegy(const QString& path,const FkFilterResult& result,
+                const std::function<bool()>& cancelled = {});
+
 class FkWorker : public QThread {
     Q_OBJECT
 public:
@@ -48,9 +73,15 @@ public:
     int fileType = 1, first = 0, last = 0, sampleFirst = 0, sampleLast = 0;
     double dx = 1;
     bool preprocess = true;
+    int mode=0, revision=0; // spectrum, filter preview, export
+    FkFilterSettings filter;
+    FkFilterResult exportResult;
+    QString outputPath;
     explicit FkWorker(QObject* parent = nullptr) : QThread(parent) {}
 signals:
     void spectrumReady(FkSpectrum result);
+    void filterReady(FkFilterResult result);
+    void exportReady(QString path);
     void failed(QString message);
     void progress(int percent);
 protected:

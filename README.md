@@ -54,6 +54,8 @@ process</br>
 
 ## 功能
 
+- **FK 滤波与预览**：参数集中到左侧，支持扇形／多边形、缩放平移、速度辅助轴、实时预览及滤后 SEG-Y 另存。[操作说明](docs/fk-filter.md)。
+
 - **FK 谱绘制**：Tools → F-K Spectrum，支持自定义道／时间窗、道间距、频率／波数／色标范围、5 种色标及 PNG 保存。[使用说明](docs/fk-spectrum.md)。
 
   ![FK 频谱实际数据界面](docs/images/fk-spectrum-example.png)

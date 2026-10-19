@@ -11,6 +11,7 @@
 #include <QPainter>
 #include <QSaveFile>
 #include <QSettings>
+#include <QDateTime>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -27,6 +28,7 @@
 #include <cmath>
 #include <memory>
 #include <stdexcept>
+#include <cstring>
 #ifdef min
 #undef min
 #endif
@@ -1459,6 +1461,11 @@ public:
         pfacc(1,m,scratch.data());
         for (int j=0;j<n;++j) values[j]=crmul(cmul(scratch[j],chirp[j]),1.0f/m);
     }
+    void inverse(std::vector<complex>& values) {
+        for(auto& z:values)z.i=-z.i;
+        forward(values);
+        for(auto& z:values){z.r/=n;z.i/=-n;}
+    }
 };
 }
 
@@ -1520,9 +1527,127 @@ FkSpectrum calculateFk(const QVector<float>& traces, int nx, int nt,
     return out;
 }
 
+FkFilterResult filterFk(const QVector<float>& raw,int nx,int nt,double dt,double dx,
+                        const FkFilterSettings& s,bool displayPreprocess,
+                        const std::function<bool()>& cancelled)
+{
+    if(nx<2 || nt<4 || nx>180180 || nt>180180 || qint64(nx)*nt>8000000 ||
+       raw.size()!=nx*nt || !std::isfinite(dt) || !std::isfinite(dx) || dt<=0 || dx<=0)
+        throw std::runtime_error("Invalid FK filtering dimensions or sampling.");
+    for(double v:{s.velocityLow,s.velocityHigh,s.velocityTaper,s.frequencyLow,s.frequencyHigh,
+                  s.attenuationDb,s.taperBins,s.timeBlendMs})
+        if(!std::isfinite(v))throw std::runtime_error("Filter parameters must be finite.");
+    if(s.frequencyLow<0 || s.frequencyHigh<=s.frequencyLow || s.frequencyHigh>.5/dt+1e-6 ||
+       s.velocityLow<0 || s.velocityHigh<=s.velocityLow || s.velocityTaper<0 ||
+       s.attenuationDb>0 || s.attenuationDb < -160 || s.taperBins<0 || s.timeBlendMs<0 ||
+       s.traceBlend<0 || s.direction<0 || s.direction>2)
+        throw std::runtime_error("Choose ordered frequency/velocity limits, nonnegative tapers and attenuation between -160 and 0 dB.");
+    if(s.polygon) {
+        if(s.vertices.size()<3)throw std::runtime_error("Draw and finish a polygon with at least 3 vertices.");
+        double area=0;
+        for(int i=0;i<s.vertices.size();++i){auto a=s.vertices[i],b=s.vertices[(i+1)%s.vertices.size()];
+            if(!std::isfinite(a.x())||!std::isfinite(a.y()))throw std::runtime_error("Invalid polygon.");
+            area+=a.x()*b.y()-b.x()*a.y();}
+        if(std::abs(area)<1e-14)throw std::runtime_error("The polygon has zero area.");
+    }
+    auto check=[&](){if(cancelled&&cancelled())throw std::runtime_error("Cancelled.");};
+    const double pi=std::acos(-1.0),df=1/(nt*dt),dk=1/(nx*dx),floorGain=std::pow(10.,s.attenuationDb/20.);
+    auto shoulder=[&](double distance,double width){return distance<=0?1.:width>0&&distance<width?.5+.5*std::cos(pi*distance/width):0.;};
+    auto gainAt=[&](int ix,int it) {
+        double f=(it<(nt+1)/2?it:it-nt)*df,k=(ix<(nx+1)/2?ix:ix-nx)*dk;
+        if(f<0){f=-f;k=-k;}
+        double selected=0;
+        if(s.polygon) {
+            QPointF p(k,f);bool inside=s.vertices.containsPoint(p,Qt::OddEvenFill);
+            double distance=std::numeric_limits<double>::infinity();
+            QPointF point(k/dk,f/df);
+            for(int i=0;i<s.vertices.size();++i){auto av=s.vertices[i],bv=s.vertices[(i+1)%s.vertices.size()];
+                QPointF a(av.x()/dk,av.y()/df),b(bv.x()/dk,bv.y()/df),d=b-a;
+                double denom=QPointF::dotProduct(d,d),u=denom>0?qBound(0.,QPointF::dotProduct(point-a,d)/denom,1.):0;
+                auto delta=point-(a+d*u);distance=qMin(distance,std::hypot(delta.x(),delta.y()));}
+            selected=inside?1.:shoulder(distance,s.taperBins);
+        } else if(s.direction==0 || (s.direction==1&&k>0) || (s.direction==2&&k<0)) {
+            double v=std::abs(k)>1e-20?f/std::abs(k):std::numeric_limits<double>::infinity();
+            selected=shoulder(qMax(s.velocityLow-v,v-s.velocityHigh),s.velocityTaper);
+        }
+        double band=shoulder(qMax(s.frequencyLow-f,f-s.frequencyHigh),s.taperBins*df);
+        selected*=band;
+        return float(s.reject?1-selected*(1-floorGain):floorGain+selected*(1-floorGain));
+    };
+    std::vector<complex> spectrum(nx*nt),line(nt);
+    FkForwardFft temporal(nt),spatial(nx);
+    for(int x=0;x<nx;++x){check();for(int t=0;t<nt;++t){float v=raw[x*nt+t];
+        if(!std::isfinite(v))throw std::runtime_error("Input contains NaN or infinity.");line[t]=cmplx(v,0);}
+        temporal.forward(line);for(int t=0;t<nt;++t)spectrum[x*nt+t]=line[t];}
+    line.resize(nx);
+    for(int t=0;t<nt;++t){check();for(int x=0;x<nx;++x)line[x]=spectrum[x*nt+t];spatial.forward(line);
+        for(int x=0;x<nx;++x){float gain=.5f*(gainAt(x,t)+gainAt((nx-x)%nx,(nt-t)%nt));spectrum[x*nt+t]=crmul(line[x],gain);}}
+    for(int t=0;t<nt;++t){check();for(int x=0;x<nx;++x)line[x]=spectrum[x*nt+t];spatial.inverse(line);
+        for(int x=0;x<nx;++x)spectrum[x*nt+t]=line[x];}
+    FkFilterResult out;out.nx=nx;out.nt=nt;out.dt=dt;out.dx=dx;out.raw=raw;out.filtered.resize(nx*nt);out.removed.resize(nx*nt);
+    const double bt=qMin(s.timeBlendMs/(dt*1000),(nt-1)/2.),bx=qMin(double(s.traceBlend),(nx-1)/2.);
+    line.resize(nt);
+    for(int x=0;x<nx;++x){check();for(int t=0;t<nt;++t)line[t]=spectrum[x*nt+t];temporal.inverse(line);
+        double wx=bx>0?.5-.5*std::cos(pi*qMin(1.,qMin(x,nx-1-x)/bx)):1.;
+        for(int t=0;t<nt;++t){double wt=bt>0?.5-.5*std::cos(pi*qMin(1.,qMin(t,nt-1-t)/bt)):1.;
+            float v=float(raw[x*nt+t]+wx*wt*(line[t].r-raw[x*nt+t]));
+            if(!std::isfinite(v))throw std::runtime_error("Filtered amplitude overflow.");
+            out.filtered[x*nt+t]=v;out.removed[x*nt+t]=raw[x*nt+t]-v;}}
+    spectrum.clear();spectrum.shrink_to_fit();
+    out.originalSpectrum=calculateFk(raw,nx,nt,dt,dx,displayPreprocess,cancelled);
+    out.filteredSpectrum=calculateFk(out.filtered,nx,nt,dt,dx,displayPreprocess,cancelled);
+    out.removedSpectrum=calculateFk(out.removed,nx,nt,dt,dx,displayPreprocess,cancelled);
+    out.gain=out.originalSpectrum;
+    for(int f=0;f<out.gain.nf;++f)for(int k=0;k<nx;++k){int x=(k+(nx+1)/2)%nx;
+        out.gain.amplitude[f*nx+k]=.5f*(gainAt(x,f)+gainAt((nx-x)%nx,(nt-f)%nt));}
+    return out;
+}
+
+void saveFkSegy(const QString& path,const FkFilterResult& r,const std::function<bool()>& cancelled)
+{
+    QFileInfo source(r.source),destination(path);
+    if(source.canonicalFilePath().isEmpty() || source.canonicalFilePath()==destination.canonicalFilePath() ||
+       source.absoluteFilePath().compare(destination.absoluteFilePath(),Qt::CaseInsensitive)==0)
+        throw std::runtime_error("Choose a new output file; the input file cannot be overwritten.");
+    if(source.size()!=r.sourceSize || source.lastModified().toMSecsSinceEpoch()!=r.sourceModified)
+        throw std::runtime_error("The source file changed. Recalculate the filter before exporting.");
+    SgyFile reader;reader.setFname(r.source);reader.setActive(true);
+    if(!reader.Active() || reader.Si()!=r.dt || r.first<0 || r.first+r.nx>reader.Nt() ||
+       r.sampleFirst<0 || r.sampleFirst+r.nt>reader.Ns() || r.filtered.size()!=r.nx*r.nt)
+        throw std::runtime_error("Filter output does not match the source file.");
+    QFile input(r.source);
+    if(!input.open(QIODevice::ReadOnly))throw std::runtime_error("Cannot read the source SEG-Y.");
+    QByteArray header=input.read(3600);
+    if(header.size()!=3600 || source.size()!=3600+qint64(reader.Nt())*reader.TrLength())
+        throw std::runtime_error("Export requires a standard fixed-length SEG-Y without trailers or extended headers.");
+    if(i2(reinterpret_cast<byte*>(header.data()+3200),305,reader.Swap())!=0)
+        throw std::runtime_error("Extended textual headers are not supported by this exporter.");
+    si2(reinterpret_cast<byte*>(header.data()+3200),25,5,reader.Swap());
+    QSaveFile output(path);output.setDirectWriteFallback(false);
+    if(!output.open(QIODevice::WriteOnly))throw std::runtime_error("Cannot create the output SEG-Y.");
+    auto write=[&](const char* data,qint64 n){if(output.write(data,n)!=n)throw std::runtime_error("Failed writing the output SEG-Y.");};
+    write(header.constData(),header.size());
+    for(int x=0;x<reader.Nt();++x){if(cancelled&&cancelled())throw std::runtime_error("Cancelled.");
+        byte* h=nullptr;int n=reader.ReadRawTrace(h,x,true);std::unique_ptr<byte[]> traceHeader(h);
+        if(n!=240 || !h)throw std::runtime_error("Cannot read a trace header.");
+        write(reinterpret_cast<char*>(h),240);
+        float* raw=reader.Rs(x);if(!raw)throw std::runtime_error("Cannot read a trace.");
+        QByteArray samples(reader.Ns()*4,0);
+        for(int t=0;t<reader.Ns();++t){float v=x>=r.first&&x<r.first+r.nx&&t>=r.sampleFirst&&t<r.sampleFirst+r.nt?
+                r.filtered[(x-r.first)*r.nt+t-r.sampleFirst]:raw[t];
+            float encoded=swapf4(v,reader.Swap());std::memcpy(samples.data()+4*t,&encoded,4);}
+        write(samples.constData(),samples.size());}
+    if(cancelled&&cancelled())throw std::runtime_error("Cancelled.");
+    if(source.size()!=QFileInfo(r.source).size() || source.lastModified()!=QFileInfo(r.source).lastModified())
+        throw std::runtime_error("Source changed during export.");
+    if(!output.commit())throw std::runtime_error("Could not commit the output file.");
+}
+
 void FkWorker::run()
 {
     try {
+        if(mode==2){saveFkSegy(outputPath,exportResult,[this](){return isInterruptionRequested();});
+            if(!isInterruptionRequested())emit exportReady(outputPath);return;}
         // Construct/open the reader on this thread; main-window file changes are safe.
         std::unique_ptr<SeisFile> reader(fileType==2 ? static_cast<SeisFile*>(new SuFile)
             : fileType==3 ? static_cast<SeisFile*>(new CstFile) : static_cast<SeisFile*>(new SgyFile));
@@ -1532,6 +1657,7 @@ void FkWorker::run()
         if(first<0 || last>=reader->Nt() || sampleFirst<0 || sampleLast>=reader->Ns() ||
            nx<2 || nt<4 || nx>180180 || nt>180180 || qint64(nx)*nt>8000000)
             throw std::runtime_error("Invalid range or input file changed. Limit the range to 8 million samples.");
+        QFileInfo sourceInfo(path);const auto sourceSize=sourceInfo.size(),sourceModified=sourceInfo.lastModified().toMSecsSinceEpoch();
         QVector<float> data(nx*nt);
         for(int x=0;x<nx;++x) {
             if(isInterruptionRequested()) return;
@@ -1540,6 +1666,11 @@ void FkWorker::run()
             std::copy(trace+sampleFirst,trace+sampleLast+1,data.begin()+x*nt);
             emit progress(40*(x+1)/nx);
         }
+        if(mode==1){auto result=filterFk(data,nx,nt,reader->Si(),dx,filter,preprocess,[this](){return isInterruptionRequested();});
+            if(QFileInfo(path).size()!=sourceSize || QFileInfo(path).lastModified().toMSecsSinceEpoch()!=sourceModified)
+                throw std::runtime_error("Source changed during filtering.");
+            result.source=path;result.sourceSize=sourceSize;result.sourceModified=sourceModified;result.first=first;result.sampleFirst=sampleFirst;
+            if(!isInterruptionRequested()){emit progress(100);emit filterReady(result);}return;}
         FkSpectrum spectrum=calculateFk(data,nx,nt,reader->Si(),dx,preprocess,[this](){return isInterruptionRequested();});
         if(!isInterruptionRequested()) {emit progress(100); emit spectrumReady(spectrum);}
     } catch(const std::exception& error) {
