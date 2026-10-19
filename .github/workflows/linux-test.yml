@@ -16,8 +16,14 @@ jobs:
       - name: Install Linux Qt build environment
         run: |
           apt-get update
-          apt-get install -y build-essential qtbase5-dev libqt5svg5-dev qttools5-dev-tools curl ca-certificates file patchelf fontconfig xvfb libxkbcommon-x11-0 libxcb-cursor0 libfuse2
+          apt-get install -y build-essential python3-pip p7zip-full libgl1-mesa-dev curl ca-certificates file patchelf fontconfig xvfb libxkbcommon-x11-0 libxcb-cursor0 libfuse2 libxrender1 libxext6 libx11-xcb1 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-xinerama0
       - uses: actions/checkout@v4
+      - name: Install matching Qt 5.15.2
+        run: |
+          python3 -m pip install aqtinstall==3.1.18
+          python3 -m aqt install-qt linux desktop 5.15.2 gcc_64 -O /opt/Qt --archives qtbase qtsvg
+          echo "/opt/Qt/5.15.2/gcc_64/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=/opt/Qt/5.15.2/gcc_64/lib" >> "$GITHUB_ENV"
       - name: Install deployment tools
         run: |
           curl -fL --retry 3 https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -o /usr/local/bin/linuxdeploy

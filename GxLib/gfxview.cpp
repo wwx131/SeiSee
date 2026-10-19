@@ -7,20 +7,6 @@
 #include "gfxview.h"
 #include "gfxstyle.h"
 
-namespace {
-QScreen *viewScreen(const QWidget *view)
-{
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    return view->screen();
-#else
-    const QWidget *top = view->window();
-    if (top && top->windowHandle())
-        return top->windowHandle()->screen();
-    return QApplication::screenAt(view->mapToGlobal(view->rect().center()));
-#endif
-}
-}
-
 GfxView::GfxView(QWidget *parent)
     : QWidget(parent)
 {
@@ -33,7 +19,7 @@ GfxView::GfxView(QWidget *parent)
     m_trackedWindow = nullptr;
     m_trackedScreen = nullptr;
 
-    QScreen *currentScreen = viewScreen(this);
+    QScreen *currentScreen = screen();
     if (!currentScreen)
         currentScreen = QApplication::primaryScreen();
     int dpix = GfxStyle::ScreenDpiX(currentScreen);
@@ -99,7 +85,7 @@ void GfxView::TrackWindowScreen()
     if (m_trackedWindow)
         TrackScreen(m_trackedWindow->screen());
     else
-        TrackScreen(viewScreen(this));
+        TrackScreen(screen());
 
     RefreshScreenDpi();
 }
@@ -121,7 +107,7 @@ void GfxView::TrackScreen(QScreen *screen)
 
 void GfxView::RefreshScreenDpi()
 {
-    QScreen *currentScreen = m_trackedScreen ? m_trackedScreen.data() : viewScreen(this);
+    QScreen *currentScreen = m_trackedScreen ? m_trackedScreen.data() : screen();
     if (!currentScreen)
         currentScreen = QApplication::primaryScreen();
 
@@ -214,7 +200,7 @@ void GfxView::paintEvent(QPaintEvent *pe)
 
     engine = painter.paintEngine();
 
-    QScreen *currentScreen = m_trackedScreen ? m_trackedScreen.data() : viewScreen(this);
+    QScreen *currentScreen = m_trackedScreen ? m_trackedScreen.data() : screen();
     if (!currentScreen)
         currentScreen = QApplication::primaryScreen();
     int screenDpiX = currentScreen
