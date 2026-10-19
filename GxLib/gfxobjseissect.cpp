@@ -178,8 +178,9 @@ bool GfxObjSeisSect::createCaptureSnapshot(
         const Ttr trace = s_src->Tt(traceIndex);
         SeisSectionTraceSnapshot traceSnapshot;
         if (trace._buf && trace._smp && trace._nsmp > 0) {
-            traceSnapshot.samples =
-                QVector<float>(trace._smp, trace._smp + trace._nsmp);
+            traceSnapshot.samples.resize(trace._nsmp);
+            for (int sample = 0; sample < trace._nsmp; ++sample)
+                traceSnapshot.samples[sample] = trace._smp[sample];
             traceSnapshot.delay = trace._dly;
         }
         snapshot->traces.append(traceSnapshot);
